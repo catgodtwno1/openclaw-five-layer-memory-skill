@@ -1,38 +1,165 @@
 #!/usr/bin/env python3
-"""五層記憶 5A+ 基準測試 — 可調輪次（1-500），含反應速度 & 百分位延遲
+"""五層記憶 5A+ 基準測試 — 可調輪次（1-300），含反應速度 & 百分位延遲
 
 用法：
-  python3 memory-5a-bench.py          # 預設 50 輪（MemOS/Cognee 連 NAS）
+  python3 memory-5a-bench.py          # 預設 50 輪
   python3 memory-5a-bench.py 100      # 100 輪
-  python3 memory-5a-bench.py 500      # 最大 500 輪
-  python3 memory-5a-bench.py --memos-url http://127.0.0.1:8765   # 本機 MemOS
-  python3 memory-5a-bench.py --cognee-url http://127.0.0.1:8000  # 本機 Cognee
-
-預設端點（跟 OpenClaw 配置一致）：
-  MemOS:  http://10.10.10.66:8765 (NAS)
-  Cognee: http://10.10.10.66:8766 (NAS)
+  python3 memory-5a-bench.py 300      # 最大 300 輪
+  python3 memory-5a-bench.py 300 --smart  # 用 LLM 生成有意義的測試數據
 """
 
-import subprocess, time, json, os, csv, sys, statistics, argparse
+import subprocess, time, json, os, csv, sys, statistics, argparse, random, urllib.request, urllib.error
 
 parser = argparse.ArgumentParser(description="五層記憶 5A+ 基準測試")
 parser.add_argument("rounds", nargs="?", type=int, default=50,
-                    help="測試輪次 (1-500，預設 50)")
-parser.add_argument("--memos-url",
-                    default=os.environ.get("MEMOS_URL", "http://127.0.0.1:8765"),
-                    help="MemOS base URL (env: MEMOS_URL, 預設 http://127.0.0.1:8765)")
-parser.add_argument("--cognee-url",
-                    default=os.environ.get("COGNEE_URL", "http://127.0.0.1:8000"),
-                    help="Cognee Sidecar base URL (env: COGNEE_URL, 預設 http://127.0.0.1:8000)")
+                    help="測試輪次 (1-300，預設 50)")
+parser.add_argument("--smart", action="store_true",
+                    help="用 MiniMax M2.7-HS 生成有意義的隨機測試數據")
 args = parser.parse_args()
-TOTAL_ROUNDS = max(1, min(500, args.rounds))
-MEMOS_URL = args.memos_url.rstrip("/")
-COGNEE_URL = args.cognee_url.rstrip("/")
+TOTAL_ROUNDS = max(1, min(300, args.rounds))
 CSV_PATH = "/tmp/memory-5a-bench.csv"
 LOG_PATH = "/tmp/memory-5a-bench.log"
 LCM_DB = os.path.expanduser("~/.openclaw/lcm.db")
 MEMORY_DIR = os.path.expanduser("~/.openclaw/workspace/memory")
 SCRATCH = os.path.join(MEMORY_DIR, "5a-bench-scratch.md")
+
+# ── Smart Data Generation ──
+SMART_DATA = []  # list of {"user": "...", "assistant": "...", "keyword": "...", "category": "..."}
+
+FALLBACK_DATA = [
+    {"user": "今天下午三點跟王律師在星巴克開會討論合約細節", "assistant": "好的，已記錄：下午三點星巴克，王律師，合約討論", "keyword": "王律師 合約", "category": "fact"},
+    {"user": "把張總的電話改成 0912-345-678", "assistant": "已更新張總聯絡方式", "keyword": "張總 電話", "category": "entity"},
+    {"user": "上次跟客戶談的報價是每月 15 萬，包含 SEO 和社群經營", "assistant": "記下了，月費 15 萬含 SEO + 社群", "keyword": "報價 SEO", "category": "decision"},
+    {"user": "週五之前要把企業微信的自動回覆功能上線", "assistant": "收到，deadline 週五，企微自動回覆", "keyword": "企微 自動回覆", "category": "fact"},
+    {"user": "我比較喜歡用繁體中文，簡報風格要簡潔商務", "assistant": "了解，繁體中文 + 簡潔商務風格", "keyword": "繁體 簡報", "category": "preference"},
+]
+
+def generate_smart_data(count):
+    """用 MiniMax M2.7-HS 批量生成有意義的隨機測試數據"""
+    # 讀取 API keys
+    mm_key = ""
+    try:
+        with open(os.path.expanduser("~/.openclaw/openclaw.json")) as f:
+            cfg = json.load(f)
+        providers = cfg.get("models", {}).get("providers", {})
+        if isinstance(providers, dict):
+            for name, prov in providers.items():
+                if "minimax" in name.lower():
+                    mm_key = prov.get("apiKey", "").strip()
+                    break
+    except: pass
+
+    if not mm_key:
+        print("[smart] 找不到 MiniMax API key，使用 fallback 數據")
+        return []
+
+    # 分批生成（每批 15 條）
+    all_data = []
+    batch_size = 15
+    batches = (count + batch_size - 1) // batch_size
+
+    topics = [
+        "工作會議和日程安排", "客戶聯絡資訊和跟進", "技術開發和部署筆記",
+        "財務報表和預算", "團隊管理和HR事務", "個人偏好和設定",
+        "專案進度和里程碑", "供應商和採購", "行銷策略和SEO",
+        "法律合約和知識產權", "旅行安排和出差", "健康和生活習慣",
+        "學習筆記和技能提升", "設備維護和IT管理", "社群媒體和品牌",
+        "數據分析和報告", "產品設計和用戶反饋", "合作夥伴和商務洽談",
+        "家庭事務和個人安排", "閱讀筆記和知識管理",
+    ]
+
+    for b in range(batches):
+        n = min(batch_size, count - len(all_data))
+        topic = topics[b % len(topics)]
+        prompt = f"""生成{n}條模擬AI助手對話，主題圍繞「{topic}」。
+直接輸出JSON陣列，不要markdown代碼塊。
+格式：[{{"user":"用戶說的話20-60字","assistant":"回覆10-30字","keyword":"1-2個搜尋詞","category":"fact或entity或decision或preference或other"}}]
+用繁體中文，語氣自然。"""
+
+        body = json.dumps({
+            "model": "MiniMax-M2.7-highspeed",
+            "messages": [
+                {"role": "system", "content": "你是JSON生成器。只輸出純JSON陣列，不要思考過程，不要解釋，不要markdown。"},
+                {"role": "user", "content": prompt}
+            ],
+            "max_tokens": 3000,
+            "temperature": 0.9,
+        })
+
+        req = urllib.request.Request(
+            "https://api.minimaxi.com/v1/text/chatcompletion_v2",
+            data=body.encode(),
+            headers={"Authorization": f"Bearer {mm_key}", "Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                raw = resp.read()
+            result = json.loads(raw)
+            text = result["choices"][0]["message"]["content"] or ""
+            # 如果 content 空，嘗試 reasoning_content
+            if not text.strip():
+                text = result["choices"][0]["message"].get("reasoning_content", "")
+            # 清理 markdown code fence
+            text = text.strip()
+            if text.startswith("```"):
+                lines = text.split("\n")
+                text = "\n".join(lines[1:])
+            if text.endswith("```"):
+                text = text[:-3]
+            text = text.strip()
+            # 找 JSON 陣列
+            start = text.find("[")
+            end = text.rfind("]")
+            if start >= 0 and end > start:
+                text = text[start:end+1]
+                batch_data = json.loads(text)
+                valid_cats = {"fact", "entity", "decision", "preference", "other"}
+                for item in batch_data:
+                    if item.get("category", "") not in valid_cats:
+                        item["category"] = "fact"
+                all_data.extend(batch_data)
+                print(f"[smart] 批次 {b+1}/{batches}: +{len(batch_data)} = {len(all_data)} ({topic})")
+            else:
+                print(f"[smart] 批次 {b+1}: 無JSON陣列 (content len={len(text)})")
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode()[:200] if hasattr(e, 'read') else ''
+            print(f"[smart] 批次 {b+1} HTTP {e.code}: {err_body}")
+        except Exception as e:
+            print(f"[smart] 批次 {b+1} 失敗: {type(e).__name__}: {e}")
+        time.sleep(0.3)  # 避免 429
+
+    return all_data[:count]
+
+SMART_DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bench-smart-data.json")
+
+if args.smart:
+    # 優先載入已有數據
+    if os.path.exists(SMART_DATA_FILE):
+        with open(SMART_DATA_FILE) as f:
+            SMART_DATA = json.load(f)
+        print(f"[smart] 載入已有數據: {len(SMART_DATA)} 條 ({SMART_DATA_FILE})")
+    if len(SMART_DATA) < TOTAL_ROUNDS:
+        need = TOTAL_ROUNDS - len(SMART_DATA)
+        print(f"[smart] 需要再生成 {need} 條...")
+        new_data = generate_smart_data(need)
+        SMART_DATA.extend(new_data)
+        # 存檔
+        with open(SMART_DATA_FILE, "w") as f:
+            json.dump(SMART_DATA, f, ensure_ascii=False, indent=1)
+        print(f"[smart] 已存檔: {len(SMART_DATA)} 條")
+    if not SMART_DATA:
+        print(f"[smart] 無數據可用，使用 {len(FALLBACK_DATA)} 條 fallback 數據循環")
+
+def get_test_content(i):
+    """取得第 i 輪的測試內容"""
+    if SMART_DATA:
+        d = SMART_DATA[i % len(SMART_DATA)]
+        return d["user"], d["assistant"], d.get("keyword", "test"), d.get("category", "fact")
+    elif args.smart:
+        d = FALLBACK_DATA[i % len(FALLBACK_DATA)]
+        return d["user"], d["assistant"], d["keyword"], d["category"]
+    else:
+        return f"bench test round {i} timestamp {time.time()}", "Acknowledged.", "bench", "fact"
 
 results = []  # (round, layer, test, pass, ms)
 errors = []
@@ -127,58 +254,57 @@ for i in range(1, TOTAL_ROUNDS + 1):
     if not ok: round_errors.append("L2/files")
 
     # L2/write
+    user_msg, asst_msg, keyword, category = get_test_content(i)
     ok, ms = timed_run(lambda: curl_status("POST", "http://127.0.0.1:18789/api/memory/store",
-        data=json.dumps({"text": f"bench R{i} {time.time()}", "category": "fact", "importance": 0.1}),
+        data=json.dumps({"text": user_msg, "category": category, "importance": 0.3}),
         headers=["Content-Type: application/json"], timeout=5) in ("200", "201", "404"))
     results.append((i, "L2", "write", True, ms))  # Skip if no API
 
     # L2/recall
     ok, ms = timed_run(lambda: curl_status("POST", "http://127.0.0.1:18789/api/memory/recall",
-        data=json.dumps({"query": "bench", "limit": 1}),
+        data=json.dumps({"query": keyword, "limit": 1}),
         headers=["Content-Type: application/json"], timeout=5) in ("200", "404"))
     results.append((i, "L2", "recall", True, ms))  # Skip if no API
 
     # ═══ L3: Cognee Sidecar ═══
     # L3/health
-    ok, ms = timed_run(lambda: curl_status("GET", f"{COGNEE_URL}/api/v1/auth/me", timeout=5) in ("200", "401"))
+    ok, ms = timed_run(lambda: curl_status("GET", "http://127.0.0.1:8000/api/v1/auth/me", timeout=5) in ("200", "401"))
     results.append((i, "L3", "health", ok, ms))
     if not ok: round_errors.append("L3/health")
 
-    # L3/login + search (combined to avoid closure/global token issues)
-    def do_login_and_search():
-        """Login then search in one function — token stays local, no closure."""
-        resp = curl_json("POST", f"{COGNEE_URL}/api/v1/auth/login",
+    # L3/login
+    token = ""
+    def do_login():
+        global token
+        resp = curl_json("POST", "http://127.0.0.1:8000/api/v1/auth/login",
             data="username=default_user@example.com&password=default_password",
             headers=["Content-Type: application/x-www-form-urlencoded"], timeout=5)
         d = json.loads(resp)
-        tk = d.get("access_token", "")
-        if not tk:
-            return False, False, 0  # login_ok, search_ok, search_ms
-        search_t0 = time.monotonic()
-        code = curl_status("POST", f"{COGNEE_URL}/api/v1/search",
-            data=json.dumps({"query": "test", "search_type": "CHUNKS"}),
-            headers=[f"Authorization: Bearer {tk}", "Content-Type: application/json"], timeout=5)
-        search_ms = int((time.monotonic() - search_t0) * 1000)
-        return True, code in ("200", "404"), search_ms
+        token = d.get("access_token", "")
+        return len(token) > 0
+    ok, ms = timed_run(do_login)
+    results.append((i, "L3", "login", ok, ms))
+    if not ok: round_errors.append("L3/login")
 
-    combo_t0 = time.monotonic()
-    try:
-        login_ok, search_ok, search_ms = do_login_and_search()
-    except Exception:
-        login_ok, search_ok, search_ms = False, False, 0
-    login_ms = int((time.monotonic() - combo_t0) * 1000) - search_ms
-
-    results.append((i, "L3", "login", login_ok, max(login_ms, 0)))
-    if not login_ok: round_errors.append("L3/login")
-    results.append((i, "L3", "search", search_ok, search_ms))
-    if not search_ok: round_errors.append("L3/search")
+    # L3/search (404 = empty dataset, still means service works)
+    def do_search():
+        if not token: return False
+        _, _, kw, _ = get_test_content(i)
+        code = curl_status("POST", "http://127.0.0.1:8000/api/v1/search",
+            data=json.dumps({"query": kw, "search_type": "CHUNKS"}),
+            headers=[f"Authorization: Bearer {token}", "Content-Type: application/json"], timeout=5)
+        return code in ("200", "404")
+    ok, ms = timed_run(do_search)
+    results.append((i, "L3", "search", ok, ms))
+    if not ok: round_errors.append("L3/search")
 
     # ═══ L3.5: MemOS ═══
     # L35/search
     def memos_search():
-        r = curl_json("POST", f"{MEMOS_URL}/product/search",
-            data=json.dumps({"query": "test", "user_id": "openclaw", "top_k": 1}),
-            headers=["Content-Type: application/json"], timeout=10)
+        _, _, kw, _ = get_test_content(i)
+        r = curl_json("POST", "http://127.0.0.1:8765/product/search",
+            data=json.dumps({"query": kw, "user_id": "openclaw", "top_k": 1}),
+            headers=["Content-Type: application/json"], timeout=20)
         return "200" in r or "success" in r.lower() or "Search completed" in r
     ok, ms = timed_run(memos_search)
     results.append((i, "L35", "search", ok, ms))
@@ -186,17 +312,18 @@ for i in range(1, TOTAL_ROUNDS + 1):
 
     # L35/add
     def memos_add():
-        r = curl_json("POST", f"{MEMOS_URL}/product/add",
+        u_msg, a_msg, kw, cat = get_test_content(i)
+        r = curl_json("POST", "http://127.0.0.1:8765/product/add",
             data=json.dumps({
                 "user_id": "openclaw",
                 "session_id": f"bench-{i}",
                 "async_mode": "async",
                 "messages": [
-                    {"role": "user", "content": f"bench test round {i} timestamp {time.time()}"},
-                    {"role": "assistant", "content": "Acknowledged."}
+                    {"role": "user", "content": u_msg},
+                    {"role": "assistant", "content": a_msg}
                 ]
             }),
-            headers=["Content-Type: application/json"], timeout=15)
+            headers=["Content-Type: application/json"], timeout=30)
         return "200" in r or "success" in r.lower() or "added" in r.lower() or "Add completed" in r
     ok, ms = timed_run(memos_add)
     results.append((i, "L35", "add", ok, ms))
@@ -215,8 +342,9 @@ for i in range(1, TOTAL_ROUNDS + 1):
 
     # L5/write
     def do_write():
+        u_msg, _, _, _ = get_test_content(i)
         with open(SCRATCH, "a") as f:
-            f.write(f"# Bench R{i} — {time.strftime('%H:%M:%S')}\n")
+            f.write(f"# R{i} [{time.strftime('%H:%M:%S')}] {u_msg[:50]}\n")
         return True
     ok, ms = timed_run(do_write)
     results.append((i, "L5", "write", ok, ms))
