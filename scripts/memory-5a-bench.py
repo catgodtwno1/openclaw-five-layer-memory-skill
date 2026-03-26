@@ -143,31 +143,27 @@ for i in range(1, TOTAL_ROUNDS + 1):
     if not ok: round_errors.append("L3/health")
 
     # L3/login
+    token = ""
     def do_login():
+        global token
         resp = curl_json("POST", f"{COGNEE_URL}/api/v1/auth/login",
             data="username=default_user@example.com&password=default_password",
             headers=["Content-Type: application/x-www-form-urlencoded"], timeout=5)
         d = json.loads(resp)
-        return d.get("access_token", "")
-    login_t0 = time.monotonic()
-    try:
-        _token = do_login()
-        login_ok = len(_token) > 0
-    except Exception:
-        _token = ""
-        login_ok = False
-    login_ms = int((time.monotonic() - login_t0) * 1000)
-    results.append((i, "L3", "login", login_ok, login_ms))
-    if not login_ok: round_errors.append("L3/login")
+        token = d.get("access_token", "")
+        return len(token) > 0
+    ok, ms = timed_run(do_login)
+    results.append((i, "L3", "login", ok, ms))
+    if not ok: round_errors.append("L3/login")
 
     # L3/search (404 = empty dataset, still means service works)
-    def do_search(tk):
-        if not tk: return False
+    def do_search():
+        if not token: return False
         code = curl_status("POST", f"{COGNEE_URL}/api/v1/search",
             data=json.dumps({"query": "test", "search_type": "CHUNKS"}),
-            headers=[f"Authorization: Bearer {tk}", "Content-Type: application/json"], timeout=5)
+            headers=[f"Authorization: Bearer {token}", "Content-Type: application/json"], timeout=5)
         return code in ("200", "404")
-    ok, ms = timed_run(lambda: do_search(_token))
+    ok, ms = timed_run(do_search)
     results.append((i, "L3", "search", ok, ms))
     if not ok: round_errors.append("L3/search")
 
