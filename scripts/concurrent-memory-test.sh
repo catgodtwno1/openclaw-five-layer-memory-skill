@@ -16,8 +16,34 @@ MACHINES=(
 )
 
 # MemOS 和 Cognee 都在老大
-MEMOS_URL="http://10.10.20.178:8765"
-COGNEE_URL="http://10.10.20.178:8000"
+# ── URL 部署模式 ──────────────────────────────────────────
+# 部署模式（3选1，取消注释那一行）:
+#
+# 模式A — NAS 集中模式（推荐，多机协作）
+#   所有机器连接 NAS MemOS + Cognee，共享数据
+#   优点：数据统一管理；缺点：NAS 并发上限约 20 路
+#
+# 模式B — 本地独立模式（单机器测试用）
+#   每台机器跑自己的 MemOS + Cogneus，无共享数据
+#
+# 模式C — 混合模式（本地 LLM/Cache，NAS 存数据）
+#   MemOS/Cognee 在本地跑，指向 NAS Neo4j + Qdrant
+#
+# 切换模式：取消对应行的注释，并注释掉其他行
+# ──────────────────────────────────────────────────────────
+
+# 模式A: NAS 集中模式（当前默认）
+: "${MEMOS_URL:=http://10.10.10.66:8765}"
+: "${COGNEE_URL:=http://10.10.10.66:8766}"
+
+# 模式B: 本地独立模式
+# MEMOS_URL="${MEMOS_URL:-http://127.0.0.1:8765}"
+# COGNEE_URL="${COGNEE_URL:-http://127.0.0.1:8000}"
+
+# 模式C: 本地服务 + NAS 存储层
+# MEMOS_URL="${MEMOS_URL:-http://127.0.0.1:8765}"
+# COGNEE_URL="${COGNEE_URL:-http://127.0.0.1:8000}"
+# 并确保 .env 里指向 NAS Neo4j/Qdrant
 
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 RESULT_DIR="/tmp/concurrent-memory-test-${TIMESTAMP}"
@@ -65,12 +91,12 @@ def test_memos(round_num):
         "messages": [{"role": "user", "content": f"并发测试记忆 {tag}: {machine_name} 在第 {round_num} 轮写入的测试数据"}],
         "user_id": "test_concurrent"
     }
-    r = api_call("POST", f"{memos_url}/product/add", payload)
+    r = api_call("POST", f"{memos_url}/product/add", payload, timeout=30)
     out["ops"].append({"op": "add", "ok": r["ok"] and "200" in r.get("body",""), "ms": r["ms"], "error": r.get("error")})
 
     # 2. 搜索
-    payload = {"query": tag, "user_id": "test_concurrent"}
-    r = api_call("POST", f"{memos_url}/product/search", payload)
+    payload = {"query": tag, "user_id": "test_concurrent", "relativity": 0}
+    r = api_call("POST", f"{memos_url}/product/search", payload, timeout=60)
     search_ok = r["ok"] and "200" in r.get("body","")
     out["ops"].append({"op": "search", "ok": search_ok, "ms": r["ms"], "error": r.get("error")})
 
@@ -81,9 +107,10 @@ def test_cognee(round_num):
     tag = f"concurrent-{machine_name}-r{round_num}-{rand_id()}"
     out = {"layer": "Cognee", "round": round_num, "ops": []}
 
-    # 1. 健康检查
+    # 1. 健康检查 (401 = auth required, still means service is up)
     r = api_call("GET", f"{cognee_url}/api/v1/settings")
-    out["ops"].append({"op": "health", "ok": r["ok"], "ms": r["ms"], "error": r.get("error")})
+    health_ok = r["ok"] or "401" in str(r.get("error","")) or "HTTP Error 401" in str(r.get("error",""))
+    out["ops"].append({"op": "health", "ok": health_ok, "ms": r["ms"], "error": r.get("error")})
 
     # 2. 登录获取 token (form-urlencoded)
     token = None
