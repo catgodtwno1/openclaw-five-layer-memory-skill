@@ -27,9 +27,59 @@ LCM_DB = os.path.expanduser("~/.openclaw/lcm.db")
 MEMORY_DIR = os.path.expanduser("~/.openclaw/workspace/memory")
 SCRATCH = os.path.join(MEMORY_DIR, "5a-bench-scratch.md")
 
-# URL resolution: CLI flag > env var > default
-MEMOS_URL = (args.memos_url or os.environ.get("MEMOS_URL") or "http://127.0.0.1:8765").rstrip("/")
-COGNEE_URL = (args.cognee_url or os.environ.get("COGNEE_URL") or "http://127.0.0.1:8000").rstrip("/")
+# ── MemOS/Cognee URL 部署模式说明 ────────────────────────────────────────────
+# 本脚本可测试三种部署模式：
+#
+# 模式A — NAS 集中模式（多机协作默认）:
+#     MEMOS_URL=http://10.10.10.66:8765
+#     COGNEE_URL=http://10.10.10.66:8766
+#   优点：数据统一；缺点：NAS 并发上限约 20 路
+#
+# 模式B — 本地独立模式（单机器）:
+#     MEMOS_URL=http://127.0.0.1:8765
+#     COGNEE_URL=http://127.0.0.1:8000
+#   优点：无需网络；缺点：各机器数据不互通
+#
+# 模式C — 混合模式（本地 LLM，NAS 存储）:
+#     本地运行 MemOS/Cognee 服务，.env 指向 NAS Neo4j/Qdrant
+#
+# URL 优先级: CLI --memos-url/--cognee-url > 环境变量 > 自动检测 > NAS 默认
+# ────────────────────────────────────────────────────────────────────────────
+
+# 自动检测：优先用环境变量，依次尝试 NAS → 本地
+_NAS_MEMOS = "http://10.10.10.66:8765"
+_NAS_COGNEE = "http://10.10.10.66:8766"
+_LOCAL_MEMOS = "http://127.0.0.1:8765"
+_LOCAL_COGNEE = "http://127.0.0.1:8000"
+
+def _check_tcp(host_port, timeout=2):
+    """检测 TCP 端口是否可达（用于自动切换）"""
+    import socket
+    try:
+        host, port = host_port.split(":")
+        with socket.create_connection((host, int(port)), timeout=timeout):
+            return True
+    except:
+        return False
+
+# URL resolution: CLI > env var > auto-detect > NAS fallback
+if args.memos_url:
+    MEMOS_URL = args.memos_url.rstrip("/")
+elif os.environ.get("MEMOS_URL"):
+    MEMOS_URL = os.environ["MEMOS_URL"].rstrip("/")
+elif _check_tcp("127.0.0.1:8765"):
+    MEMOS_URL = _LOCAL_MEMOS  # 本地 MemOS 可达，用本地
+else:
+    MEMOS_URL = _NAS_MEMOS    # 回退到 NAS
+
+if args.cognee_url:
+    COGNEE_URL = args.cognee_url.rstrip("/")
+elif os.environ.get("COGNEE_URL"):
+    COGNEE_URL = os.environ["COGNEE_URL"].rstrip("/")
+elif _check_tcp("127.0.0.1:8000"):
+    COGNEE_URL = _LOCAL_COGNEE
+else:
+    COGNEE_URL = _NAS_COGNEE
 
 # ── Smart Data Generation ──
 SMART_DATA = []  # list of {"user": "...", "assistant": "...", "keyword": "...", "category": "..."}
@@ -311,7 +361,7 @@ for i in range(1, TOTAL_ROUNDS + 1):
     def memos_search():
         _, _, kw, _ = get_test_content(i)
         r = curl_json("POST", f"{MEMOS_URL}/product/search",
-            data=json.dumps({"query": kw, "user_id": "openclaw", "top_k": 1}),
+            data=json.dumps({"query": kw, "user_id": "openclaw", "top_k": 1, "search_memory_type": "LongTermMemory"}),
             headers=["Content-Type: application/json"], timeout=20)
         return "200" in r or "success" in r.lower() or "Search completed" in r
     ok, ms = timed_run(memos_search)

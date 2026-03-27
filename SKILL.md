@@ -71,13 +71,73 @@ Exit 0 = all OK, exit 1 = failures (prints alert message for cron pickup).
 | L3.5 | search, add | MemOS search + add APIs |
 | L5 | dir, list, write, read | Directory exists, .md files present, write+read roundtrip |
 
-## Configuring Endpoints
+## Deployment Modes — Choosing the Right Architecture
 
-URLs resolve in this order (highest priority first):
+The five-layer memory stack supports three deployment configurations:
+
+### Mode A — NAS Centralized (Recommended for multi-machine)
+
+| Service | URL | Notes |
+|---------|-----|-------|
+| MemOS | `http://10.10.10.66:8765` | NAS 上的共享实例 |
+| Cognee | `http://10.10.10.66:8766` | NAS 上的共享实例 |
+
+**Pros**: unified data across all machines, easy management  
+**Cons**: NAS concurrent limit ~20 req/batch; 4×10 workers hits ceiling (→ use 4×5)
+
+```bash
+# 切换到模式A
+export MEMOS_URL=http://10.10.10.66:8765
+export COGNEE_URL=http://10.10.10.66:8766
+python3 scripts/memory-5a-bench.py 100
+```
+
+### Mode B — Local Standalone (Single machine)
+
+| Service | URL | Notes |
+|---------|-----|-------|
+| MemOS | `http://127.0.0.1:8765` | 本机 Docker 启动 |
+| Cognee | `http://127.0.0.1:8000` | 本机 Docker 启动 |
+
+**Pros**: no network dependency; **Cons**: no data sharing between machines
+
+```bash
+# 切换到模式B
+export MEMOS_URL=http://127.0.0.1:8765
+export COGNEE_URL=http://127.0.0.1:8000
+python3 scripts/memory-5a-bench.py
+```
+
+### Mode C — Hybrid (Local service + NAS storage layer)
+
+Run MemOS/Cognee as local Docker containers, but point their `.env` at NAS Neo4j/Qdrant for persistent vector/graph storage. Best of both worlds: local LLM speed + NAS durability.
+
+```bash
+# 本地服务，NAS 存储
+# 修改 memos-server/.env:
+# NEO4J_URI=bolt://10.10.10.66:7687
+# QDRANT_URL=http://10.10.10.66:6333
+```
+
+### URL Resolution Order
+
+`memory-5a-bench.py` resolves URLs in this priority:
 
 1. **CLI flags:** `--memos-url` / `--cognee-url`
 2. **Environment variables:** `MEMOS_URL` / `COGNEE_URL`
-3. **Default:** `http://127.0.0.1:8765` (MemOS) / `http://127.0.0.1:8000` (Cognee)
+3. **Auto-detect**: script checks if `127.0.0.1:8765` is reachable → uses local if yes, NAS if no
+4. **Fallback default**: `http://10.10.10.66:8765` (NAS) — auto-detect always runs first
+
+### Four-Machine Concurrent Testing
+
+```bash
+# 四台机器同时跑，各 5 workers = 20 并发（约 20-30s/batch）
+# 在任一台机器上：
+bash scripts/concurrent-memory-test.sh 10
+
+# 自定义 workers 数量（减少以避开 NAS 上限）：
+ROUNDS=10 MEMOS_URL=http://10.10.10.66:8765 bash scripts/concurrent-memory-test.sh 10
+```
 
 ### Per-machine setup (recommended)
 

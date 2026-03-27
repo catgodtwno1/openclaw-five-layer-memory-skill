@@ -95,7 +95,7 @@ def test_memos(round_num):
     out["ops"].append({"op": "add", "ok": r["ok"] and "200" in r.get("body",""), "ms": r["ms"], "error": r.get("error")})
 
     # 2. 搜索
-    payload = {"query": tag, "user_id": "test_concurrent", "relativity": 0}
+    payload = {"query": tag, "user_id": "test_concurrent", "relativity": 0, "search_memory_type": "LongTermMemory"}
     r = api_call("POST", f"{memos_url}/product/search", payload, timeout=60)
     search_ok = r["ok"] and "200" in r.get("body","")
     out["ops"].append({"op": "search", "ok": search_ok, "ms": r["ms"], "error": r.get("error")})
