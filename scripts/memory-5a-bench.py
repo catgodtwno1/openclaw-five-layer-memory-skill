@@ -15,6 +15,10 @@ parser.add_argument("rounds", nargs="?", type=int, default=50,
                     help="測試輪次 (1-300，預設 50)")
 parser.add_argument("--smart", action="store_true",
                     help="用 MiniMax M2.7-HS 生成有意義的隨機測試數據")
+parser.add_argument("--memos-url", default=None,
+                    help="MemOS URL (default: $MEMOS_URL or http://127.0.0.1:8765)")
+parser.add_argument("--cognee-url", default=None,
+                    help="Cognee URL (default: $COGNEE_URL or http://127.0.0.1:8000)")
 args = parser.parse_args()
 TOTAL_ROUNDS = max(1, min(300, args.rounds))
 CSV_PATH = "/tmp/memory-5a-bench.csv"
@@ -22,6 +26,10 @@ LOG_PATH = "/tmp/memory-5a-bench.log"
 LCM_DB = os.path.expanduser("~/.openclaw/lcm.db")
 MEMORY_DIR = os.path.expanduser("~/.openclaw/workspace/memory")
 SCRATCH = os.path.join(MEMORY_DIR, "5a-bench-scratch.md")
+
+# URL resolution: CLI flag > env var > default
+MEMOS_URL = (args.memos_url or os.environ.get("MEMOS_URL") or "http://127.0.0.1:8765").rstrip("/")
+COGNEE_URL = (args.cognee_url or os.environ.get("COGNEE_URL") or "http://127.0.0.1:8000").rstrip("/")
 
 # ── Smart Data Generation ──
 SMART_DATA = []  # list of {"user": "...", "assistant": "...", "keyword": "...", "category": "..."}
@@ -268,7 +276,7 @@ for i in range(1, TOTAL_ROUNDS + 1):
 
     # ═══ L3: Cognee Sidecar ═══
     # L3/health
-    ok, ms = timed_run(lambda: curl_status("GET", "http://127.0.0.1:8000/api/v1/auth/me", timeout=5) in ("200", "401"))
+    ok, ms = timed_run(lambda: curl_status("GET", f"{COGNEE_URL}/api/v1/auth/me", timeout=5) in ("200", "401"))
     results.append((i, "L3", "health", ok, ms))
     if not ok: round_errors.append("L3/health")
 
@@ -276,7 +284,7 @@ for i in range(1, TOTAL_ROUNDS + 1):
     token = ""
     def do_login():
         global token
-        resp = curl_json("POST", "http://127.0.0.1:8000/api/v1/auth/login",
+        resp = curl_json("POST", f"{COGNEE_URL}/api/v1/auth/login",
             data="username=default_user@example.com&password=default_password",
             headers=["Content-Type: application/x-www-form-urlencoded"], timeout=5)
         d = json.loads(resp)
@@ -290,7 +298,7 @@ for i in range(1, TOTAL_ROUNDS + 1):
     def do_search():
         if not token: return False
         _, _, kw, _ = get_test_content(i)
-        code = curl_status("POST", "http://127.0.0.1:8000/api/v1/search",
+        code = curl_status("POST", f"{COGNEE_URL}/api/v1/search",
             data=json.dumps({"query": kw, "search_type": "CHUNKS"}),
             headers=[f"Authorization: Bearer {token}", "Content-Type: application/json"], timeout=5)
         return code in ("200", "404")
@@ -302,7 +310,7 @@ for i in range(1, TOTAL_ROUNDS + 1):
     # L35/search
     def memos_search():
         _, _, kw, _ = get_test_content(i)
-        r = curl_json("POST", "http://127.0.0.1:8765/product/search",
+        r = curl_json("POST", f"{MEMOS_URL}/product/search",
             data=json.dumps({"query": kw, "user_id": "openclaw", "top_k": 1}),
             headers=["Content-Type: application/json"], timeout=20)
         return "200" in r or "success" in r.lower() or "Search completed" in r
@@ -313,7 +321,7 @@ for i in range(1, TOTAL_ROUNDS + 1):
     # L35/add
     def memos_add():
         u_msg, a_msg, kw, cat = get_test_content(i)
-        r = curl_json("POST", "http://127.0.0.1:8765/product/add",
+        r = curl_json("POST", f"{MEMOS_URL}/product/add",
             data=json.dumps({
                 "user_id": "openclaw",
                 "session_id": f"bench-{i}",
