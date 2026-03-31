@@ -12,7 +12,7 @@ Test, benchmark, and monitor all memory layers in OpenClaw.
 | Layer | Name | Backend | LLM Provider | What It Stores |
 |-------|------|---------|--------------|----------------|
 | L1 | LCM | SQLite (`~/.openclaw/lcm.db`) | Claude Sonnet-4-6 (Anthropic) | Conversation summaries (DAG) |
-| L2 | LanceDB Pro | Lance files (`~/.openclaw/`) | Qwen2.5-32B-Instruct (SiliconFlow) | Semantic memory (vector + BM25 + reranker) |
+| L2 | LanceDB Pro | Lance files (`~/.openclaw/`) | **Claude Haiku 4-5** (Anthropic setup-token) | Semantic memory (vector + BM25 + reranker) |
 | L3 | Hindsight | Docker + native PostgreSQL | **MiniMax-M2.7-highspeed** | Facts, entities, relationships (consolidation engine) |
 | L3.5 | Cognee | Docker (cognee-fixed:v5) | **MiniMax-M2.7-highspeed** | Knowledge graph (entities + relationships via KG extraction) |
 | L5 | Daily Files | Filesystem (`workspace/memory/`) | None | Raw daily notes |
@@ -30,13 +30,22 @@ Hindsight 和 Cognee 已從 SiliconFlow Qwen2.5-32B 切換至 **MiniMax M2.7-HS*
 | Component | Model | Provider | Cost |
 |-----------|-------|----------|------|
 | L1 LCM (summary + expansion) | Claude Haiku-4-5 | Anthropic setup-token | 低 |
-| L2 LanceDB Pro (LLM + reranker) | Qwen2.5-32B-Instruct + bge-reranker-v2-m3 | SiliconFlow | ~¥7-8/月 |
+| L2 LanceDB Pro (Smart Extraction) | **Claude Haiku 4-5** | Anthropic setup-token | ~¥9/月（從 Qwen2.5-32B ¥400+/月切換，省 97.7%） |
+| L2 LanceDB Pro (Reranker) | bge-reranker-v2-m3 | SiliconFlow | 免費 |
 | L3 Hindsight (retain/recall/consolidation) | **MiniMax-M2.7-highspeed** | MiniMax api.minimaxi.com | Coding Plan 含 |
 | L3.5 Cognee (knowledge graph) | **MiniMax-M2.7-highspeed** | MiniMax api.minimaxi.com | Coding Plan 含 |
 | Embedding (L2 + L3 + Cognee shared) | BAAI/bge-m3 (1024 dims) | SiliconFlow | 免費 |
 | Main session / subagent | Claude Opus-4-6 / MiniMax M2.7-HS | 各自 | 各自 |
 
-### 2026-03-31 變更：Hindsight + Cognee LLM 切至 M2.7-HS
+### 2026-03-31 變更 1：LanceDB-Pro Smart Extraction → Claude Haiku 4-5
+
+- **改動者**：老四 (Happy) 通過 A2A 通知並執行
+- **原因**：SiliconFlow Qwen2.5-32B 成本 ~400+ RMB/月
+- **新模型**：Anthropic claude-haiku-4-5（setup-token 路徑）
+- **結果**：成本降至 ~9 RMB/月（省 97.7%），速度快 15%，四台併發壓測零錯誤
+- **四台全部已更新**
+
+### 2026-03-31 變更 2：Hindsight + Cognee LLM 切至 M2.7-HS
 
 - **原因**：SiliconFlow Qwen2.5-32B 免費 tier TPM 限制太低，batch cognify/consolidation 頻繁 429
 - **M2.7-HS 注意**：reasoning model，reasoning_tokens 消耗 max_tokens budget
